@@ -1,0 +1,9 @@
+# The agent's workstation (`default`) and the tiny CI service (`ci`) share this
+# image: Debian slim + git, curl, jq, python3, pytest. Kept small on purpose.
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl git jq procps python3 python3-pytest \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /root
+CMD ["sleep", "infinity"]

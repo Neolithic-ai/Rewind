@@ -1,0 +1,51 @@
+[project]
+name = "rewind-env"
+version = "0.1.0"
+description = "Docker environment checkpoints and branching with an optional Inspect adapter"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0.3",
+]
+
+[project.optional-dependencies]
+inspect = [
+    "inspect-ai==0.3.279",
+]
+openrouter = [
+    "inspect-ai==0.3.279",
+    "openai>=3.4.0",  # Inspect's openrouter/ provider is built on the OpenAI client
+]
+
+[dependency-groups]
+dev = [
+    "inspect-ai==0.3.279",
+    "openai>=3.4.0",
+]
+
+# inspect_rewind: Inspect discovers the `rewind` sandbox through this entry point
+[project.entry-points.inspect_ai]
+inspect_rewind = "inspect_rewind._registry"
+
+[project.scripts]
+rewind = "rewind.cli:main"
+inspect-rewind = "inspect_rewind.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rewind", "inspect_rewind"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/rewind",
+    "/inspect_rewind",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+    "/uv.lock",
+]

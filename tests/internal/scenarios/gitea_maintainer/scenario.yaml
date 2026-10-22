@@ -1,0 +1,182 @@
+# Scenario definition consumed by the generic `rewind` package. Everything the
+# harness needs to know about this environment is data here; the only code is
+# the shell snippets/scripts it runs inside the containers.
+name: gitea_maintainer
+description: Maintain acme/calc in Gitea - fix a bug through PR, CI, merge and release.
+compose: compose.yaml
+build: [default]            # services whose images are built (others are pulled)
+
+# Static variables; seed steps can add more with `save_as`. All of them are
+# passed as env vars to seed steps, milestone detectors and the scorer (never
+# to the agent's own tool calls, which only see what the seed gave the agent).
+vars:
+  GITEA_URL: http://gitea:3000
+  ADMIN_USER: gitea-admin
+  ADMIN_PASSWORD: "Admin12345!"
+  AGENT_USER: agent
+  AGENT_PASSWORD: "Agent12345!"
+
+agent:
+  service: default          # where the agent's `bash` tool runs
+  workdir: /root
+  tool_timeout: 300
+  max_turns: 60             # real-model safety cap
+  system: |
+    You are a software maintainer working on a Debian workstation via the `bash`
+    tool (git, curl, jq, python3 and pytest are installed). A Gitea server is at
+    $GITEA_URL; you are user $GITEA_USER and your API token is in $GITEA_TOKEN
+    (git over HTTP is already authenticated). The helper `gapi METHOD PATH
+    [curl args...]` calls the Gitea API, e.g. `gapi GET /repos/acme/calc/issues`.
+    A CI service runs pytest on pull requests and on pushes to main and posts a
+    commit status with context `ci/pytest`. Your home and working directory is
+    /root: keep your work under it (e.g. clone into ~/calc). Work step by step;
+    when everything is done, reply with a short summary and no tool call.
+  prompt: >-
+    You maintain acme/calc in Gitea. Fix the issue: clone, reproduce, fix, push
+    a branch, open a PR referencing the issue, wait for CI to pass, merge, close
+    the issue, and tag release v0.1.1.
+
+services:
+  default:
+    # /root is the agent's home and workdir (the prompt asks it to work there);
+    # /tmp is captured too, since agents often clone into it anyway.
+    capture: [/root, /tmp]
+  gitea:
+    capture: [/data]
+    ready: wget -qO- http://127.0.0.1:3000/api/v1/version
+    # Consistency hook: fold the SQLite WAL into the main DB right before the
+    # services are paused, so the snapshot's gitea.db is self-contained.
+    pre_snapshot:
+      user: git
+      run: sqlite3 /data/gitea/gitea.db 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null
+  ci:
+    capture: [/var/lib/ci]
+    ready: curl -sf http://127.0.0.1:8080/health
+
+# Run once on a fresh environment. Step kinds: `run` (inline bash), `script`
+# (a file in this directory, piped to bash), `copy` (host dir -> container).
+# `save_as` stores the last line of output as a new variable.
+seed:
+  - name: create admin and agent users
+    service: gitea
+    user: git
+    run: |
+      gitea admin user create --username "$ADMIN_USER" --password "$ADMIN_PASSWORD" \
+        --email admin@acme.test --admin --must-change-password=false
+      gitea admin user create --username "$AGENT_USER" --password "$AGENT_PASSWORD" \
+        --email agent@acme.test --must-change-password=false
+  - name: mint admin token
+    service: gitea
+    user: git
+    run: gitea admin user generate-access-token --username "$ADMIN_USER" --token-name seed --scopes all --raw
+    save_as: ADMIN_TOKEN
+  - name: mint agent token
+    service: gitea
+    user: git
+    run: gitea admin user generate-access-token --username "$AGENT_USER" --token-name agent --scopes all --raw
+    save_as: AGENT_TOKEN
+  - name: CI credentials
+    service: ci
+    run: |
+      mkdir -p /var/lib/ci && printf '{"token": "%s"}\n' "$ADMIN_TOKEN" > /var/lib/ci/config.json
+  - name: copy repo sources
+    service: default
+    copy: seed/calc
+    to: /tmp/seed-calc
+  - name: org, repo, issue and CI webhook
+    service: default
+    script: seed/seed_repo.sh
+  - name: record seeded main
+    service: default
+    run: git ls-remote "$GITEA_URL/acme/calc.git" refs/heads/main | cut -f1
+    save_as: SEED_MAIN       # main as seeded: what fix_committed compares against
+  - name: agent credentials
+    service: default
+    script: seed/agent_env.sh
+
+# Milestones are detected from environment state (never from the transcript)
+# after every tool call. Each `detect` is bash run in `service` with the vars
+# above, after `detect_prelude`; exit 0 = reached. Milestones are sticky: the
+# first checkpoint where a detector succeeds gets the label.
+#
+# The workspace milestones look for clones of acme/calc anywhere on the
+# workstation, not only under /root: a real agent may clone into /tmp/calc.
+detect_prelude: |
+  calc_clones() {   # every git clone of acme/calc on this machine, one dir per line
+    find / -xdev -maxdepth 6 \( -path /proc -o -path /sys -o -path /dev \) -prune \
+        -o -name .git -type d -print 2>/dev/null \
+      | while read -r g; do
+          git -C "${g%/.git}" remote get-url origin 2>/dev/null | grep -q 'acme/calc' \
+            && echo "${g%/.git}"
+        done
+  }
+  fix_commits() {   # commits in clone $1 that touch calc/stats.py and are not on main as seeded
+    local base=${SEED_MAIN:-refs/remotes/origin/main}
+    git -C "$1" cat-file -e "$base^{commit}" 2>/dev/null || base=refs/remotes/origin/main
+    git -C "$1" rev-list --branches --remotes --tags --not "$base" -- calc/stats.py 2>/dev/null
+  }
+milestones:
+  - name: seeded
+    service: default
+    detect: "true"
+  - name: cloned
+    service: default
+    detect: '[ -n "$(calc_clones)" ]'
+  - name: reproduced          # pytest recorded failing tests in its cache
+    service: default
+    detect: |
+      for d in $(calc_clones); do
+        grep -qs '::' "$d/.pytest_cache/v/cache/lastfailed" && exit 0
+      done; exit 1
+  # A commit to calc/stats.py that is not on main as seeded, pushed or not: real
+  # agents often commit, push and even open the PR in one tool call. Then
+  # fix_committed shares that step with pr_open, and a fork "from fix_committed"
+  # starts with the branch pushed and the PR open, i.e. it is a fork from pr_open.
+  - name: fix_committed
+    service: default
+    detect: |
+      for d in $(calc_clones); do
+        [ -n "$(fix_commits "$d")" ] && exit 0
+      done; exit 1
+  - name: pr_open
+    service: default
+    detect: |
+      curl -sf -H "Authorization: token $ADMIN_TOKEN" "$GITEA_URL/api/v1/repos/acme/calc/pulls?state=all" \
+        | jq -e 'length > 0' >/dev/null
+  - name: ci_done             # a final ci/pytest status on some PR head
+    service: default
+    detect: |
+      api="$GITEA_URL/api/v1/repos/acme/calc"
+      for sha in $(curl -sf -H "Authorization: token $ADMIN_TOKEN" "$api/pulls?state=all" | jq -r '.[].head.sha'); do
+        curl -sf -H "Authorization: token $ADMIN_TOKEN" "$api/commits/$sha/status" \
+          | jq -e 'any(.statuses[]?; .context == "ci/pytest" and (.status == "success" or .status == "failure"))' \
+          >/dev/null && exit 0
+      done; exit 1
+  - name: merged
+    service: default
+    detect: |
+      curl -sf -H "Authorization: token $ADMIN_TOKEN" "$GITEA_URL/api/v1/repos/acme/calc/pulls?state=closed" \
+        | jq -e 'any(.[]; .merged)' >/dev/null
+  - name: released
+    service: default
+    detect: |
+      curl -sf -H "Authorization: token $ADMIN_TOKEN" "$GITEA_URL/api/v1/repos/acme/calc/tags/v0.1.1" >/dev/null
+
+# Verifies the end state through the Gitea API. Prints a JSON object with a
+# boolean `success` (plus per-check details).
+scorer:
+  service: default
+  script: score.sh
+
+mock_paths: mock_paths.yaml
+
+# Optional: a JSON summary of the environment's visible state, recorded with
+# every checkpoint, at the end of every run/branch and right after a branch is
+# restored. A branch must come back with its checkpoint's fingerprint, and a
+# finished environment must keep its own, which proves restores are faithful
+# and environments isolated. `volatile` keys are left out of those comparisons:
+# CI may still finish or redeliver jobs on its own after a snapshot.
+fingerprint:
+  service: default
+  script: fingerprint.sh
+  volatile: [ci_runs]

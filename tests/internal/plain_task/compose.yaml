@@ -1,0 +1,10 @@
+services:
+  default:
+    image: debian:bookworm-slim
+    command: ["sleep", "infinity"]
+    init: true
+    working_dir: /root
+    volumes:
+      - notes:/srv/notes
+volumes:
+  notes:

@@ -1,0 +1,10 @@
+# Attacker sandbox: the "default" service where the agent's bash tool runs.
+# Debian slim + the tools the task needs (bash, curl, git, procps).
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash curl git procps ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /root
+# Keep the container alive so the harness can exec the agent's tool calls.
+CMD ["sleep", "infinity"]

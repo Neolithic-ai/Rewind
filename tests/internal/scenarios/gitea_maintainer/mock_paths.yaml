@@ -1,0 +1,210 @@
+# Scripted tool calls for the mock model (deterministic, no API key). Each step
+# is one `bash` tool call on the workstation, exactly as a model would emit it;
+# `final` is the closing assistant message.
+#
+# A path without `from` is a full script: forking at step N replays its steps
+# after N. A path with `from: <milestone>` is a continuation, replayed in full
+# from a checkpoint carrying that label.
+
+path1:
+  description: "Fix A: divide by len(xs) instead of len(xs) - 1."
+  steps:
+    - |-
+      git clone "$GITEA_URL/acme/calc.git" ~/calc
+    - |-
+      cd ~/calc && python3 -m pytest -q
+    - |-
+      cd ~/calc && git checkout -b fix-mean-divisor \
+        && sed -i 's|sum(xs) / (len(xs) - 1)|sum(xs) / len(xs)|' calc/stats.py && git diff
+    - |-
+      cd ~/calc && python3 -m pytest -q
+    - |-
+      cd ~/calc && git commit -qam "Fix off-by-one divisor in mean() (fixes #1)" && git log --oneline -2
+    - |-
+      cd ~/calc && git push -q -u origin fix-mean-divisor 2>&1
+    - |-
+      jq -n '{title: "Fix off-by-one in mean()", head: "fix-mean-divisor", base: "main",
+              body: "Fixes #1: mean() divided by len(xs) - 1 instead of len(xs)."}' \
+        | gapi POST /repos/acme/calc/pulls -d @- | jq '{number, state, head: .head.sha}'
+    - |-
+      n=$(gapi GET '/repos/acme/calc/pulls?state=open' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .number')
+      sha=$(gapi GET /repos/acme/calc/pulls/$n | jq -r .head.sha)
+      for i in $(seq 120); do
+        s=$(gapi GET /repos/acme/calc/commits/$sha/status | jq -r .state)
+        case "$s" in success|failure|error) break ;; esac; sleep 1
+      done
+      echo "PR #$n head $sha: CI $s"
+    - |-
+      n=$(gapi GET '/repos/acme/calc/pulls?state=open' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .number')
+      for i in $(seq 30); do
+        code=$(gapi POST /repos/acme/calc/pulls/$n/merge -o /dev/null -w '%{http_code}' \
+          -d '{"Do": "merge", "delete_branch_after_merge": false}')
+        [ "$code" = 200 ] && break; sleep 1
+      done
+      gapi GET /repos/acme/calc/pulls/$n | jq '{number, merged, merge_commit_sha}'
+    - |-
+      sha=$(gapi GET '/repos/acme/calc/pulls?state=closed' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .merge_commit_sha')
+      for i in $(seq 120); do
+        s=$(gapi GET /repos/acme/calc/commits/$sha/status | jq -r .state)
+        case "$s" in success|failure|error) break ;; esac; sleep 1
+      done
+      echo "main $sha: CI $s"
+    - |-
+      gapi PATCH /repos/acme/calc/issues/1 -d '{"state": "closed"}' | jq '{number, state}'
+    - |-
+      cd ~/calc && git checkout -q main && git pull -q && python3 -m pytest -q \
+        && git tag -a v0.1.1 -m "calc v0.1.1: fix mean() (#1)" && git push -q origin v0.1.1 && git tag -l
+  final: Fixed #1 (off-by-one in mean()), merged the PR after CI passed, closed the issue and tagged v0.1.1.
+
+path2:
+  from: fix_committed
+  description: "Fix B: drop the local fix A commit and use statistics.fmean instead."
+  steps:
+    - |-
+      cd ~/calc && git checkout -q -B fix-mean-fmean origin/main && python3 - <<'PY'
+      import pathlib
+      p = pathlib.Path("calc/stats.py")
+      s = p.read_text()
+      s = s.replace('"""Basic descriptive statistics."""\n', '"""Basic descriptive statistics."""\n\nimport statistics\n', 1)
+      s = s.replace("return sum(xs) / (len(xs) - 1)", "return statistics.fmean(xs)")
+      p.write_text(s)
+      PY
+      git diff
+    - |-
+      cd ~/calc && python3 -m pytest -q
+    - |-
+      cd ~/calc && git commit -qam "Use statistics.fmean in mean() (fixes #1)" && git log --oneline -2
+    - |-
+      cd ~/calc && git push -q -u origin fix-mean-fmean 2>&1
+    - |-
+      jq -n '{title: "Use statistics.fmean in mean()", head: "fix-mean-fmean", base: "main",
+              body: "Fixes #1: compute the mean with statistics.fmean."}' \
+        | gapi POST /repos/acme/calc/pulls -d @- | jq '{number, state, head: .head.sha}'
+    - |-
+      n=$(gapi GET '/repos/acme/calc/pulls?state=open' | jq -r '.[] | select(.head.ref == "fix-mean-fmean") | .number')
+      sha=$(gapi GET /repos/acme/calc/pulls/$n | jq -r .head.sha)
+      for i in $(seq 120); do
+        s=$(gapi GET /repos/acme/calc/commits/$sha/status | jq -r .state)
+        case "$s" in success|failure|error) break ;; esac; sleep 1
+      done
+      echo "PR #$n head $sha: CI $s"
+    - |-
+      n=$(gapi GET '/repos/acme/calc/pulls?state=open' | jq -r '.[] | select(.head.ref == "fix-mean-fmean") | .number')
+      for i in $(seq 30); do
+        code=$(gapi POST /repos/acme/calc/pulls/$n/merge -o /dev/null -w '%{http_code}' \
+          -d '{"Do": "merge", "delete_branch_after_merge": false}')
+        [ "$code" = 200 ] && break; sleep 1
+      done
+      gapi GET /repos/acme/calc/pulls/$n | jq '{number, merged, merge_commit_sha}'
+    - |-
+      sha=$(gapi GET '/repos/acme/calc/pulls?state=closed' | jq -r '.[] | select(.head.ref == "fix-mean-fmean") | .merge_commit_sha')
+      for i in $(seq 120); do
+        s=$(gapi GET /repos/acme/calc/commits/$sha/status | jq -r .state)
+        case "$s" in success|failure|error) break ;; esac; sleep 1
+      done
+      echo "main $sha: CI $s"
+    - |-
+      gapi PATCH /repos/acme/calc/issues/1 -d '{"state": "closed"}' | jq '{number, state}'
+    - |-
+      cd ~/calc && git checkout -q main && git pull -q && python3 -m pytest -q \
+        && git tag -a v0.1.1 -m "calc v0.1.1: fix mean() (#1)" && git push -q origin v0.1.1 && git tag -l
+  final: Fixed #1 with statistics.fmean, merged the PR after CI passed, closed the issue and tagged v0.1.1.
+
+path3:
+  description: "Fix A again, but cloned into /tmp/calc (outside the workdir), as real agents do."
+  steps:
+    - |-
+      git clone "$GITEA_URL/acme/calc.git" /tmp/calc
+    - |-
+      cd /tmp/calc && python3 -m pytest -q
+    - |-
+      cd /tmp/calc && git checkout -b fix-mean-divisor \
+        && sed -i 's|sum(xs) / (len(xs) - 1)|sum(xs) / len(xs)|' calc/stats.py && git diff
+    - |-
+      cd /tmp/calc && python3 -m pytest -q
+    - |-
+      cd /tmp/calc && git commit -qam "Fix off-by-one divisor in mean() (fixes #1)" && git log --oneline -2
+    - |-
+      cd /tmp/calc && git push -q -u origin fix-mean-divisor 2>&1
+    - |-
+      jq -n '{title: "Fix off-by-one in mean()", head: "fix-mean-divisor", base: "main",
+              body: "Fixes #1: mean() divided by len(xs) - 1 instead of len(xs)."}' \
+        | gapi POST /repos/acme/calc/pulls -d @- | jq '{number, state, head: .head.sha}'
+    - |-
+      n=$(gapi GET '/repos/acme/calc/pulls?state=open' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .number')
+      sha=$(gapi GET /repos/acme/calc/pulls/$n | jq -r .head.sha)
+      for i in $(seq 120); do
+        s=$(gapi GET /repos/acme/calc/commits/$sha/status | jq -r .state)
+        case "$s" in success|failure|error) break ;; esac; sleep 1
+      done
+      echo "PR #$n head $sha: CI $s"
+    - |-
+      n=$(gapi GET '/repos/acme/calc/pulls?state=open' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .number')
+      for i in $(seq 30); do
+        code=$(gapi POST /repos/acme/calc/pulls/$n/merge -o /dev/null -w '%{http_code}' \
+          -d '{"Do": "merge", "delete_branch_after_merge": false}')
+        [ "$code" = 200 ] && break; sleep 1
+      done
+      gapi GET /repos/acme/calc/pulls/$n | jq '{number, merged, merge_commit_sha}'
+    - |-
+      sha=$(gapi GET '/repos/acme/calc/pulls?state=closed' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .merge_commit_sha')
+      for i in $(seq 120); do
+        s=$(gapi GET /repos/acme/calc/commits/$sha/status | jq -r .state)
+        case "$s" in success|failure|error) break ;; esac; sleep 1
+      done
+      echo "main $sha: CI $s"
+    - |-
+      gapi PATCH /repos/acme/calc/issues/1 -d '{"state": "closed"}' | jq '{number, state}'
+    - |-
+      cd /tmp/calc && git checkout -q main && git pull -q && python3 -m pytest -q \
+        && git tag -a v0.1.1 -m "calc v0.1.1: fix mean() (#1)" && git push -q origin v0.1.1 && git tag -l
+  final: Fixed #1 (off-by-one in mean()), merged the PR after CI passed, closed the issue and tagged v0.1.1.
+
+path4:
+  description: "Fix A, but commit and push in one tool call, as real agents do."
+  steps:
+    - |-
+      git clone "$GITEA_URL/acme/calc.git" ~/calc
+    - |-
+      cd ~/calc && python3 -m pytest -q
+    - |-
+      cd ~/calc && git checkout -b fix-mean-divisor \
+        && sed -i 's|sum(xs) / (len(xs) - 1)|sum(xs) / len(xs)|' calc/stats.py && git diff
+    - |-
+      cd ~/calc && python3 -m pytest -q
+    - |-
+      cd ~/calc && git commit -qam "Fix off-by-one divisor in mean() (fixes #1)" \
+        && git push -q -u origin fix-mean-divisor 2>&1 && git log --oneline -2
+    - |-
+      jq -n '{title: "Fix off-by-one in mean()", head: "fix-mean-divisor", base: "main",
+              body: "Fixes #1: mean() divided by len(xs) - 1 instead of len(xs)."}' \
+        | gapi POST /repos/acme/calc/pulls -d @- | jq '{number, state, head: .head.sha}'
+    - |-
+      n=$(gapi GET '/repos/acme/calc/pulls?state=open' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .number')
+      sha=$(gapi GET /repos/acme/calc/pulls/$n | jq -r .head.sha)
+      for i in $(seq 120); do
+        s=$(gapi GET /repos/acme/calc/commits/$sha/status | jq -r .state)
+        case "$s" in success|failure|error) break ;; esac; sleep 1
+      done
+      echo "PR #$n head $sha: CI $s"
+    - |-
+      n=$(gapi GET '/repos/acme/calc/pulls?state=open' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .number')
+      for i in $(seq 30); do
+        code=$(gapi POST /repos/acme/calc/pulls/$n/merge -o /dev/null -w '%{http_code}' \
+          -d '{"Do": "merge", "delete_branch_after_merge": false}')
+        [ "$code" = 200 ] && break; sleep 1
+      done
+      gapi GET /repos/acme/calc/pulls/$n | jq '{number, merged, merge_commit_sha}'
+    - |-
+      sha=$(gapi GET '/repos/acme/calc/pulls?state=closed' | jq -r '.[] | select(.head.ref == "fix-mean-divisor") | .merge_commit_sha')
+      for i in $(seq 120); do
+        s=$(gapi GET /repos/acme/calc/commits/$sha/status | jq -r .state)
+        case "$s" in success|failure|error) break ;; esac; sleep 1
+      done
+      echo "main $sha: CI $s"
+    - |-
+      gapi PATCH /repos/acme/calc/issues/1 -d '{"state": "closed"}' | jq '{number, state}'
+    - |-
+      cd ~/calc && git checkout -q main && git pull -q && python3 -m pytest -q \
+        && git tag -a v0.1.1 -m "calc v0.1.1: fix mean() (#1)" && git push -q origin v0.1.1 && git tag -l
+  final: Fixed #1 (off-by-one in mean()), merged the PR after CI passed, closed the issue and tagged v0.1.1.

@@ -1,0 +1,22 @@
+# Branch variants for `python -m rewind.evals --branch-variants` (real_agent.sh
+# uses this file by default). Each fork point is branched once per variant.
+# Keys: name (required), model (default: the eval's --model), inject (a user
+# message appended after the checkpoint's messages), inject_file (the same, read
+# from a file relative to this one), system (replaces the system prompt).
+
+# Baseline: the parent's model, no change.
+- name: same
+
+# Same model, plus a new instruction at the checkpoint.
+- name: alt-instruction
+  inject: Before fixing, write a regression test for the bug and include it in the PR.
+
+# Another provider, through OpenRouter. DeepSeek V3.2 (OpenRouter id
+# `deepseek/deepseek-v3.2`) is a capable agentic/tool-calling model at about
+# $0.26 / $0.80 per million input / output tokens (Oct 2026), roughly 10x
+# cheaper than claude-sonnet-5 ($2 / $10). Its tool-call ids and reasoning
+# format differ from Anthropic's, so it also exercises the cross-provider
+# replay of the parent's messages. With a mock eval (`--model mockllm/model`)
+# it is stood in for by `mockllm/deepseek-v3.2`.
+- name: other-model
+  model: openrouter/deepseek/deepseek-v3.2

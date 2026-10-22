@@ -1,0 +1,5 @@
+# Scripted outputs for mockllm/model: the parent run (3 bash steps, then submit).
+- bash: "printf 'dishes\\nlaundry\\n' > /srv/notes/todo.txt"
+- bash: "echo vacuum >> /srv/notes/todo.txt"
+- bash: "wc -l < /srv/notes/todo.txt > /root/count.txt"
+- submit: "3"

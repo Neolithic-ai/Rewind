@@ -1,0 +1,43 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install tested dependencies
+        run: uv sync --locked --python '${{ matrix.python }}'
+      - name: Run tests without provider credentials
+        run: uv run --locked python -m unittest discover -s tests -v
+      - name: Build and install the standalone wheel outside the checkout
+        run: |
+          uv build --wheel
+          uv venv --python '${{ matrix.python }}' "$RUNNER_TEMP/rewind-core"
+          uv pip install --python "$RUNNER_TEMP/rewind-core/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/rewind-core/bin/python" -c 'import importlib.util; from rewind import Environment, Checkpoint; assert importlib.util.find_spec("inspect_ai") is None; assert importlib.util.find_spec("rewind.demo") is None; assert importlib.util.find_spec("inspect_rewind.demo") is None'
+          "$RUNNER_TEMP/rewind-core/bin/rewind" doctor
+          "$RUNNER_TEMP/rewind-core/bin/python" "$GITHUB_WORKSPACE/tests/internal/smoke_environment.py" --output-dir "$GITHUB_WORKSPACE/runs/ci-smoke"
+          "$RUNNER_TEMP/rewind-core/bin/python" "$GITHUB_WORKSPACE/tests/internal/smoke_bundle.py" --output-dir "$GITHUB_WORKSPACE/runs/ci-smoke"
+      - name: Upload integration results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-python-${{ matrix.python }}
+          path: runs/ci-smoke/*/report.json
+          if-no-files-found: ignore

@@ -1,0 +1,32 @@
+x-service: &service
+  image: python:3.12-slim
+  init: true
+  volumes:
+    - ./app.py:/app.py:ro
+  networks: [private]
+services:
+  agent:
+    <<: *service
+    command: [sleep, infinity]
+    volumes:
+      - ./app.py:/app.py:ro
+      - workspace:/data
+  api:
+    <<: *service
+    command: [python, /app.py, api]
+    volumes:
+      - ./app.py:/app.py:ro
+      - api-state:/data
+  worker:
+    <<: *service
+    command: [python, /app.py, worker]
+    volumes:
+      - ./app.py:/app.py:ro
+      - receipts:/data
+volumes:
+  workspace:
+  api-state:
+  receipts:
+networks:
+  private:
+    internal: true

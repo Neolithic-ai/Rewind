@@ -1,0 +1,4 @@
+# Scripted outputs for a branch forked at step 2 (todo.txt has 3 chores, no count yet):
+# add a fourth chore, count, submit.
+- bash: "echo mop >> /srv/notes/todo.txt && wc -l < /srv/notes/todo.txt > /root/count.txt"
+- submit: "4"

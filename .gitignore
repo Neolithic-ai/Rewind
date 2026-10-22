@@ -1,0 +1,21 @@
+# Local run artifacts (checkpoints, transcripts, per-run metadata)
+/runs/
+/run-scratch/
+/checkpoints/
+*.rewind
+*.tar
+*.tar.gz
+# uv / Python
+/.venv/
+/dist/
+.env
+.env.*
+!.env.example
+!.env.template
+__pycache__/
+*.pyc
+# probe scratch
+/tests/internal/env/compose_probe.yaml
+# inspect_rewind snapshots (default $INSPECT_REWIND_DIR) and example logs
+/.rewind/
+/logs/
